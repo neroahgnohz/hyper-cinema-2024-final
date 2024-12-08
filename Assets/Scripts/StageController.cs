@@ -3,65 +3,142 @@ using System.IO.Ports;
 
 public class StageController : MonoBehaviour
 {
-    private float rotationSpeed = 2.0F;
-    SerialPort serialPort = new SerialPort("COM7", 9600);
+    [SerializeField] private float rotationSpeed = 2.0f;
+    [SerializeField] private float smoothingFactor = 0.5f;
     
+    private string portName = "/dev/cu.usbmodem2101";
+    private SerialPort serialPort;
+    private bool isPortConnected = false;
+    private float lastReadTime = 0f;
+    private float lastReconnectAttempt = 0f;
+    private readonly float readInterval = 0.02f;
+    private readonly float reconnectInterval = 2f; // Wait 2 seconds between reconnection attempts
+    private Quaternion lastValidRotation;
+
     void Start()
     {
-        if (!serialPort.IsOpen)
+        lastValidRotation = transform.rotation;
+        ConnectToArduino();
+    }
+
+    private void ConnectToArduino()
+    {
+        // Close any existing connection
+        if (serialPort != null)
         {
+            if (serialPort.IsOpen)
+                serialPort.Close();
+            serialPort.Dispose();
+            serialPort = null;
+        }
+
+        try
+        {
+            serialPort = new SerialPort(portName, 9600)
+            {
+                ReadTimeout = 50,
+                WriteTimeout = 50,
+                DtrEnable = true
+            };
+
             serialPort.Open();
-            serialPort.ReadTimeout = 50;
+            isPortConnected = true;
+            Debug.Log("Connected to Arduino");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"Arduino connection error: {e.Message}");
+            isPortConnected = false;
         }
     }
 
     void Update()
     {
-        if (enableMouseInput())
+        // Attempt reconnection if disconnected
+        if (!isPortConnected && Time.time - lastReconnectAttempt >= reconnectInterval)
         {
-            float mouseX = Input.GetAxis("Mouse X");
-            float mouseY = Input.GetAxis("Mouse Y");
-            //Debug.Log("mouseX: " + mouseX + " mouseY: " + mouseY);
-            transform.Rotate(rotationSpeed * mouseY, rotationSpeed * -mouseX, 0);
-        } else
-        {
-            getInputFromArduino();
+            Debug.Log("Attempting to reconnect...");
+            ConnectToArduino();
+            lastReconnectAttempt = Time.time;
+            return;
         }
-    }
 
-    private bool enableMouseInput()
-    {
-        return Input.GetMouseButton(1);
-    }
+        if (Time.time - lastReadTime < readInterval)
+            return;
 
-    private void getInputFromArduino()
-    {
-        if (serialPort.IsOpen)
+        if (Input.GetMouseButton(1))
         {
-            try
+            HandleMouseInput();
+        }
+        else
+        {
+            GetArduinoData();
+        }
+
+        lastReadTime = Time.time;
+    }
+
+    private void HandleMouseInput()
+    {
+        float mouseX = Input.GetAxis("Mouse X");
+        float mouseY = Input.GetAxis("Mouse Y");
+        transform.Rotate(rotationSpeed * mouseY, rotationSpeed * -mouseX, 0);
+        lastValidRotation = transform.rotation;
+    }
+
+    private void GetArduinoData()
+    {
+        if (!isPortConnected || serialPort == null || !serialPort.IsOpen)
+            return;
+
+        try
+        {
+            serialPort.Write("x");
+            string data = serialPort.ReadLine();
+
+            if (string.IsNullOrEmpty(data))
+                return;
+
+            string[] list = data.Trim().Split(',');
+
+            if (list.Length > 2)
             {
-                serialPort.Write("x");
-                string data = serialPort.ReadLine();
-                string[] list = data.Trim().Split(',');
-                if (list.Length > 2)
-                {
-                    float heading = float.Parse(list[0]);
-                    float roll = float.Parse(list[1]);
-                    float pitch = float.Parse(list[2]);
-                    // Debug.Log(heading + "," + pitch + "," + roll);
-                    Quaternion newRotation = Quaternion.Euler(-pitch, -heading, -roll); //x, y, z
-                    transform.rotation = Quaternion.Lerp(transform.rotation, newRotation, Time.deltaTime * 5f);
-                }
+                float heading = float.Parse(list[0]);
+                float roll = float.Parse(list[1]);
+                float pitch = float.Parse(list[2]);
+
+                Quaternion targetRotation = Quaternion.Euler(-pitch, -heading, -roll);
+                transform.rotation = Quaternion.Lerp(lastValidRotation, targetRotation, smoothingFactor);
+                lastValidRotation = transform.rotation;
             }
-            catch (System.TimeoutException) { }
+        }
+        catch (System.TimeoutException)
+        {
+            // Use last valid rotation
+            transform.rotation = lastValidRotation;
+        }
+        catch (System.Exception)
+        {
+            Debug.Log("Lost connection to Arduino. Will attempt reconnection...");
+            isPortConnected = false;
         }
     }
 
     private void OnApplicationQuit()
     {
-        if (serialPort.IsOpen)
+        if (serialPort != null && serialPort.IsOpen)
         {
             serialPort.Close();
+            serialPort.Dispose();
+        }
+    }
+
+    private void OnDisable()
+    {
+        if (serialPort != null && serialPort.IsOpen)
+        {
+            serialPort.Close();
+            serialPort.Dispose();
         }
     }
 }
