@@ -1,0 +1,59 @@
+#pragma kernel ChangeTextureColor
+
+Texture2D<float4> InputTexture;
+RWTexture2D<float4> OutputTexture;
+
+float3 LightColor;
+float ChangeRate;
+uint Seed;
+
+// Improved random number generation
+float rand(float2 seed)
+{
+    return frac(sin(dot(seed, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+[numthreads(8, 8, 1)]
+void ChangeTextureColor(uint3 id : SV_DispatchThreadID)
+{
+    uint2 texSize;
+    InputTexture.GetDimensions(texSize.x, texSize.y);
+
+    if (id.x >= texSize.x || id.y >= texSize.y)
+        return;
+
+    float4 originalColor = InputTexture[id.xy];
+
+    float threshold = 0.001;
+    bool isBlack = (originalColor.r < threshold &&
+                        originalColor.g < threshold &&
+                        originalColor.b < threshold);
+
+    if (!isBlack)
+    {
+        OutputTexture[id.xy] = originalColor;
+        return;
+    }
+
+    // Create a seed using both position and global seed
+    float2 seedVec = float2(id.x + Seed * 0.7f, id.y + Seed * 1.3f);
+    float randomValue = rand(seedVec);
+
+    // Change color based on probability (ChangeRate should be 1-100 representing percentage)
+    if (randomValue < ChangeRate / 100.0f)
+    {
+        OutputTexture[id.xy] = float4(LightColor, originalColor.a);
+    }
+    else
+    {
+        OutputTexture[id.xy] = originalColor;
+    }
+    //if (randomValue < (ChangeRate / 100.0f))
+    //{
+    //    OutputTexture[id.xy] = float4(LightColor, originalColor.a); // Preserve alpha
+    //}
+    //else
+    //{
+    //    OutputTexture[id.xy] = originalColor;
+    //}
+}

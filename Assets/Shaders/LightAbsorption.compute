@@ -1,0 +1,113 @@
+#pragma kernel CSMain
+
+RWTexture2D<float4> AbsorptionTexture;
+
+// Matrices
+float4x4 _LightViewProjection;
+float4x4 _ObjectToWorld;
+
+// Light properties
+float3 _LightPosition;
+float3 _LightDirection;
+float4 _LightColor;
+float _LightRange;
+float _LightAngle;
+float _FadeSpeed;
+
+struct Ray {
+    float3 origin;
+    float3 direction;
+};
+
+// Ray-casting helper functions
+Ray CreateRay(float2 uv)
+{
+    Ray ray;
+    ray.origin = _LightPosition;
+
+    // Convert UV to world space point
+    float4 worldPos = mul(_ObjectToWorld, float4(uv.x - 0.5, uv.y - 0.5, 0, 1.0));
+    ray.direction = normalize(worldPos.xyz - _LightPosition);
+
+    return ray;
+}
+
+bool IsInSpotlight(float3 direction)
+{
+    float cosAngle = dot(normalize(direction), _LightDirection);
+    return cosAngle >= cos(_LightAngle);
+}
+
+bool RayIntersectsSphere(Ray ray, float3 center, float radius, out float t)
+{
+    float3 oc = ray.origin - center;
+    float a = dot(ray.direction, ray.direction);
+    float b = 2.0 * dot(oc, ray.direction);
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = b * b - 4 * a * c;
+
+    if (discriminant < 0)
+    {
+        t = 0;
+        return false;
+    }
+
+    t = (-b - sqrt(discriminant)) / (2.0 * a);
+    return t >= 0;
+}
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    // Get texture dimensions
+    uint width, height;
+    AbsorptionTexture.GetDimensions(width, height);
+
+    if (id.x >= width || id.y >= height)
+        return;
+
+    // Convert pixel coordinates to UV
+    float2 uv = float2(id.x / float(width), id.y / float(height));
+
+    // Create ray from light position
+    Ray ray = CreateRay(uv);
+
+    // Current color
+    float4 currentColor = AbsorptionTexture[id.xy];
+
+    // Check if ray is within spotlight cone
+    if (!IsInSpotlight(ray.direction))
+    {
+        AbsorptionTexture[id.xy] = currentColor;
+        return;
+    }
+
+    // Check distance
+    float3 worldPos = mul(_ObjectToWorld, float4(uv.x - 0.5, uv.y - 0.5, 0, 1.0)).xyz;
+    float distanceToLight = length(worldPos - _LightPosition);
+
+    if (distanceToLight > _LightRange)
+    {
+        AbsorptionTexture[id.xy] = currentColor;
+        return;
+    }
+
+    // Transform point to light space
+    float4 lightSpacePos = mul(_LightViewProjection, float4(worldPos, 1.0));
+    float2 lightSpaceUV = (lightSpacePos.xy / lightSpacePos.w) * 0.5 + 0.5;
+
+    // Check if point is visible from light
+    bool isLit = lightSpacePos.z > 0 &&
+        lightSpaceUV.x >= 0 && lightSpaceUV.x <= 1 &&
+        lightSpaceUV.y >= 0 && lightSpaceUV.y <= 1;
+
+    if (isLit)
+    {
+        // Calculate light attenuation
+        float attenuation = 1.0 - saturate(distanceToLight / _LightRange);
+        float4 targetColor = _LightColor * attenuation;
+
+        // Lerp to target color
+        AbsorptionTexture[id.xy] = lerp(currentColor, targetColor, _FadeSpeed);
+    }
+}
